@@ -11,9 +11,14 @@ from app.config import Config
 from app.db import init_db
 from app.services import (
     close_batch,
+    dependencies_for_batch,
+    dispose,
     get_batch,
     list_batches,
+    list_dependencies,
+    list_dispositions,
     list_objects,
+    list_orchestration,
     list_reports,
     register_object,
     run_visibility,
@@ -126,7 +131,11 @@ async def api_batch_detail(request: Request, batch_id: int) -> dict:
     batch = get_batch(batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="批次不存在")
-    return {"batch": batch, "objects": list_objects(batch_id)}
+    return {
+        "batch": batch,
+        "objects": list_objects(batch_id),
+        "dependencies": dependencies_for_batch(batch_id),
+    }
 
 
 @post("/api/batches/{batch_id:int}/objects")
@@ -171,6 +180,60 @@ async def api_close(request: Request, batch_id: int) -> Response:
     )
 
 
+@get("/api/dependencies")
+async def api_dependencies(request: Request) -> dict:
+    require_user(request)
+    return {"items": list_dependencies()}
+
+
+@post("/api/dependencies/{dependency_id:int}/dispose")
+async def api_dispose(request: Request, dependency_id: int) -> Response:
+    user = require_user(request)
+    body = await request.json()
+    mode = str(body.get("mode", "")).strip()
+    expected_version = body.get("expected_version")
+    note = str(body.get("note", ""))
+    try:
+        result = dispose(
+            dependency_id,
+            mode,
+            expected_version=(
+                int(expected_version) if expected_version is not None else None
+            ),
+            note=note,
+            actor=user,
+        )
+    except (TypeError, ValueError):
+        return Response(
+            content={"ok": False, "error": "版本号无效"},
+            status_code=400,
+            media_type="application/json",
+        )
+    except ServiceError as exc:
+        return Response(
+            content={"ok": False, "error": exc.message},
+            status_code=exc.status_code,
+            media_type="application/json",
+        )
+    return Response(
+        content=result,
+        status_code=200,
+        media_type="application/json",
+    )
+
+
+@get("/api/dispositions")
+async def api_dispositions(request: Request) -> dict:
+    require_user(request)
+    return {"items": list_dispositions()}
+
+
+@get("/api/orchestration")
+async def api_orchestration(request: Request) -> dict:
+    require_user(request)
+    return {"items": list_orchestration()}
+
+
 @get("/api/visibility-reports")
 async def api_reports(request: Request) -> dict:
     require_user(request)
@@ -201,6 +264,10 @@ app = Litestar(
         api_batch_detail,
         api_register,
         api_close,
+        api_dependencies,
+        api_dispose,
+        api_dispositions,
+        api_orchestration,
         api_reports,
         api_run_report,
         create_static_files_router(path="/static", directories=[str(STATIC)]),

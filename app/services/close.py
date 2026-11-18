@@ -3,6 +3,9 @@ from app.services.objects import ServiceError
 
 
 def close_batch(batch_id: int, db_path: str | None = None) -> dict:
+    # 延迟导入：dependencies 依赖 objects，避免循环
+    from app.services.dependencies import assert_close_allowed
+
     with get_db(db_path) as conn:
         batch = conn.execute(
             "SELECT * FROM landing_batches WHERE id=?", (batch_id,)
@@ -19,9 +22,12 @@ def close_batch(batch_id: int, db_path: str | None = None) -> dict:
         ).fetchall()
         if not objs:
             raise ServiceError("空批不可闭合", 400)
+        # 银区闭合须等铜区齐套；拧了就拦，处置先于闭合
+        assert_close_allowed(conn, batch)
         n = len(objs)
         conn.execute(
-            "UPDATE landing_batches SET status='已闭合', closed_object_count=? WHERE id=?",
+            "UPDATE landing_batches SET status='已闭合', closed_object_count=?, "
+            "version=version+1 WHERE id=?",
             (n, batch_id),
         )
         conn.execute(
@@ -29,7 +35,10 @@ def close_batch(batch_id: int, db_path: str | None = None) -> dict:
             (batch_id,),
         )
         conn.execute(
-            "INSERT INTO close_runs(batch_id, object_count, ok, detail) VALUES (?,?,1,?)",
+            "INSERT INTO close_runs(batch_id, object_count, ok, detail) VALUES (?,?,1,?) "
+            "ON CONFLICT(batch_id) DO UPDATE SET "
+            "object_count=excluded.object_count, ok=1, detail=excluded.detail, "
+            "created_at=datetime('now')",
             (batch_id, n, f"闭合 {n} 个对象"),
         )
         run = conn.execute(
@@ -41,8 +50,7 @@ def close_batch(batch_id: int, db_path: str | None = None) -> dict:
 def dependency_zone_for(zone_code: str, db_path: str | None = None) -> str | None:
     with get_db(db_path) as conn:
         row = conn.execute(
-            "SELECT value FROM meta WHERE key=?",
-            (f"dep_{zone_code}",),
+            "SELECT upstream_zone FROM zone_dependencies WHERE dependent_zone=?",
+            (zone_code,),
         ).fetchone()
-        return row["value"] if row else None
-
+        return row["upstream_zone"] if row else None

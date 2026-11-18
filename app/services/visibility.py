@@ -37,9 +37,15 @@ def run_visibility(as_of_date: str, db_path: str | None = None) -> dict:
             "  SELECT COUNT(*) FROM landing_objects o WHERE o.batch_id=b.id AND o.status='已闭合'"
             ")"
         ).fetchone()["c"]
+        # 跨区依赖错位：下游已闭合而上游未齐套，且无隔离放行凭证
+        from app.services.dependencies import dependency_gap_count
+
+        gap = dependency_gap_count(conn)
+        mismatch += gap
         summary = (
             f"截至 {day}：已闭合 {closed} 批，收集中 {open_n} 批，"
             f"对象 {objects}，孤儿 {orphan}，错位 {mismatch}"
+            + (f"（依赖缺口 {gap}）" if gap else "")
         )
         cur = conn.execute(
             "INSERT INTO visibility_reports("
